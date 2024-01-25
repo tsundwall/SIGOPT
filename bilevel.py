@@ -12,6 +12,8 @@ class bilevel_problem: #will be quasiconvex
         self.alpha = alpha
         self.beta = beta
 
+    
+
     def solve(self):
 
         curr_r = self.r_range[1]

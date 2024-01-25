@@ -8,12 +8,15 @@ import time
 
 class problem:
 
-    def __init__(self,sig_funcs,constraints,init_upper_limits,tol,r,d_vec=None,A=None,b=None):
+    def __init__(self,sig_funcs,constraints,init_lower_limits,init_upper_limits,tol,r,d_vec=None,A=None,b=None):
         self.sig_funcs = sig_funcs
         self.constraints = constraints
         self.init_upper_limits = init_upper_limits
+        self.init_lower_limits = init_lower_limits
         self.sol = None
         self.tol = tol
+        self.highest_lb = -np.Inf
+        self.lowest_ub = np.Inf
         self.max_approx_err = np.Inf
         self.r = r
         self.n = len(self.sig_funcs)
@@ -21,9 +24,28 @@ class problem:
         self.A = A
         self.b = b
         self.iters = 0
+        self.tot_cvx_time = 0
+        self.bounds = {}
 
         if self.d_vec is None:
             self.d_vec = [1]*self.n
+
+    def get_theoretical_bounds(self):
+
+        self.bounds['num_subproblems'] = np.Inf
+        tot = 1
+        for func in self.sig_funcs:
+            z_i = func.c
+            l_i = 0
+            delta_i = (self.tol/self.n)/((func.sigmoid_derivative(z_i))-(func.sigmoid_derivative(l_i)))
+            # print(delta_i)
+            tot *= np.floor((z_i-l_i)/delta_i) + 1
+
+        self.bounds['num_subproblems'] = 2*tot
+
+
+
+
 
     def clear(self):
         self.sol = None
@@ -34,18 +56,25 @@ class problem:
         t = time.time()
 
         q = bb_queue()
-        q.add([search_region(self,self.n,np.zeros(self.n),self.init_upper_limits,[])])
+        q.add([search_region(self,self.n,self.init_lower_limits,self.init_upper_limits,[])])
 
         while q.length > 0 and self.max_approx_err > self.tol:
-
+            titer = time.time()
             curr_candidate = q.pop()
 
-            self.max_approx_err = curr_candidate.evaluate_region()
+            err = curr_candidate.evaluate_region()
+            if (curr_candidate.ub >= q.max_lower_bound):
+                if len(q.queue.queue) > 0:
+                    if curr_candidate.ub > -q.queue.queue[0][0]:
+                        self.max_approx_err = err
+                else:
+                    self.max_approx_err = err
 
             new_regions = curr_candidate.split_region()
             q.prune_split_regions(new_regions[0],new_regions[1])
+            # print(f'iter time: {time.time()-titer}')
 
-        self.sol = q.pop()
+        self.sol = q.pop()#curr_candidate
         # if q.length == 0:
             # print('CRY')
         print(f'complete: {time.time()-t} secs')
@@ -72,6 +101,9 @@ class piecewise_linear_bound:
     def __init__(self,sigmoid,l,u):
         self.lower_constraint = l
         self.upper_constraint = u
+        self.w = None
+        self.w_slp = None
+        self.w_int = None
         self.sigmoid = sigmoid
         self.plb_arr = []
 
@@ -128,18 +160,21 @@ class piecewise_linear_bound:
         return curr_min_val
 
 
-    def find_plb(self,tol):
+    def find_plb(self,tol,idx):
         lines = []
         errors = []
         w,w_slope,w_intercept = self.get_bisection(.01,1,4)
+        self.w = w
+        self.w_slp = w_slope
+        self.w_int = w_intercept
 
         if w >= self.upper_constraint:
 
             f_l = self.sigmoid.evaluate(self.lower_constraint)
             f_u = self.sigmoid.evaluate(self.upper_constraint)
 
-            slope = (f_u-f_l)/(self.upper_constraint-self.lower_constraint)
-            self.plb_arr = [[slope,-slope*self.lower_constraint+f_l]]
+            self.w_slp = (f_u-f_l)/(self.upper_constraint-self.lower_constraint)
+            self.plb_arr = [[self.w_slp,-self.w_slp*self.lower_constraint+f_l]]
 
             return
 
@@ -200,9 +235,9 @@ class search_region:
     def peek(self):
 
         # print(f'x alloc: {self.x_opt_approx}')
-        print(f'ub - lb: {self.ub - self.lb}')
-        # print(f'upper bound: {self.ub}')
-        # print(f'lower bound: {self.lb}')
+        # print(f'ub - lb: {self.ub - self.lb}')
+        print(f'upper bound: {self.ub}')
+        print(f'lower bound: {self.lb}')
         # print(f'lower_lims: {self.lower_lims}')
         # print(f'upper_lims: {self.upper_lims}')
         # print(f'parent split dim: {self.parent_split_dim}')
@@ -216,7 +251,7 @@ class search_region:
         for func_idx,func in enumerate(self.sig_funcs):
 
             plb_obj = piecewise_linear_bound(func,self.lower_lims[func_idx],self.upper_lims[func_idx])
-            plb_obj.find_plb(0.01)
+            plb_obj.find_plb(0.1,func_idx)
             self.plb_funcs.append(plb_obj)
 
         self.solve_plb_approximation(self.problem.r)
@@ -228,8 +263,8 @@ class search_region:
         curr_plb = self.plb_funcs[idx]
         return curr_plb.plb_get_minimum_val(curr_plb.plb_arr,self.x_opt_approx[idx])
 
-    def solve_plb_approximation(self,r):
-
+    def solve_plb_approximation(self,r,plb_TOL=1e-6):
+        print('HERE')
         self.problem.iters += 1
         constraints = []
 
@@ -253,14 +288,59 @@ class search_region:
         constraints += [self.problem.d_vec@x <= r]
         prob = cp.Problem(cp.Minimize(ones_vec@-t),
                          constraints)
-
+        tcvx = time.time()
         prob.solve()
 
+        all_solved = True
+
+        for iter in range(10):
+            # print('HERE')
+            for var in range(self.problem.n):
+                if (x[var].value >  self.plb_funcs[var].w):
+                    if (t[var].value - plb_TOL) > self.sig_funcs[var].evaluate(x[var].value):
+                        # print(var)
+                        # print(self.sig_funcs[var].evaluate(x[var].value))
+                        all_solved = False
+                        new_line_slope,new_line_int = self.plb_funcs[0].plb_get_tangent_line(self.sig_funcs[var],x[var].value)
+                        constraints += [new_line_slope * x[var] + new_line_int >= t[var]]
+
+            if not all_solved:
+                # x = cp.Variable(n)
+                # t = cp.Variable(n)
+                prob = cp.Problem(cp.Minimize(ones_vec@-t),
+                            constraints)
+                # print(len(constraints))
+                prob.solve()
+
+            else:
+                break
+
+        self.problem.tot_cvx_time += time.time()-tcvx
         self.dual_r = constraints[-1].dual_value
         self.ub = -prob.value
         self.x_opt_approx = x.value
         self.lb = self.evaluate_sigmoid_lb(r)
         self.type= 'curr'
+        self.problem.lowest_ub = np.min([self.ub,self.problem.lowest_ub])
+        self.problem.highest_lb = np.max([self.lb,self.problem.highest_lb])
+
+        #adjust t to be on convex envelope
+        self.ub = self.convert_to_cvx_envelope(x.value,t.value)
+
+
+    def convert_to_cvx_envelope(self,x,t):
+
+        t_array = []
+
+        for x_i_idx,x_i in enumerate(x):
+            if x_i > self.plb_funcs[x_i_idx].w:
+                t_array.append(self.sig_funcs[x_i_idx].evaluate(x_i))
+            else:
+                slp,int = [self.plb_funcs[x_i_idx].w_slp,self.plb_funcs[x_i_idx].w_int]
+                t_array.append(slp*x_i+int)
+
+        return np.sum(t_array)
+
 
     def evaluate_sigmoid_lb(self,r):
 
@@ -314,7 +394,7 @@ class search_region:
             if curr_err > split_dim_err:
                 split_dim_err = curr_err
                 split_dim = decision_var
-
+        # print(split_dim_err)
         new_upper_bounds_lower_subrectangle = copy.deepcopy(self.upper_lims)
 
         new_upper_bounds_lower_subrectangle[split_dim] = self.x_opt_approx[split_dim]
@@ -345,14 +425,14 @@ class bb_queue:
 
     def prune_split_regions(self,lower_region,upper_region):
 
-        if lower_region.ub >= self.max_lower_bound:
+        if np.round(lower_region.ub,7) >= np.round(self.max_lower_bound,7):
 
             self.add([lower_region])
             if lower_region.lb > self.max_lower_bound:
                 self.max_lower_bound = lower_region.lb
             self.length += 1
 
-        if upper_region.ub >= self.max_lower_bound:
+        if np.round(upper_region.ub,7) >= np.round(self.max_lower_bound,7):
 
             self.add([upper_region])
             if upper_region.lb > self.max_lower_bound:
@@ -371,7 +451,7 @@ class bb_queue:
             # print(f'line:{priority}')
 
             self.length -= 1
-            if candidate.ub >= self.max_lower_bound:
+            if np.round(candidate.ub,7) >= np.round(self.max_lower_bound,7):
 
                 candidate_region_not_found = False
 
