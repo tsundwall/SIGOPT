@@ -130,7 +130,7 @@ class bilevel_problem:
 
             print(f'\n')
             print(curr_lam-prev_lam)
-        print(f'FUCK: {curr_lam}')
+
         return x_alloc,curr_r,curr_lam
 
 
@@ -354,7 +354,6 @@ class bilevel_problem:
                 # prev_lam = curr_lam
                 # curr_lam = self.eval_lambda(curr_r)
                 # # print(f'r{self.sigopt_problem.sol.parent_dual_r}')
-                # # print(f'white women: {self.alpha-self.beta*self.sigopt_problem.sol.parent_dual_r}')
                 # print(f'curr r: {curr_r}')
                 # # print(f'inner: {self.sigopt_problem.sol.ub}')
                 # print(f'outer: {self.eval_lambda(curr_r)}')
