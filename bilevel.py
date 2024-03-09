@@ -62,7 +62,7 @@ class bilevel_problem:
         x_alloc = self.sigopt_problem.sol.x_opt_approx
 
         while no_activation and (time.time() - self.time_start < self.time_lim):
-            print(f'solving max,,,: {curr_r}')
+            # print(f'solving max,,,: {curr_r}')
             activation = self.activation_occurred(k,x_alloc) #this should never be true on the first iteration
             # #print(f'over it: {prev_r}')
             # #print(f'over it: {curr_r}')
@@ -121,10 +121,19 @@ class bilevel_problem:
             return None,None,None,None
 
 
+    def get_dual_manually(self,k,r):
+        offset = 0
 
+        for i in range(k-1):
+            offset += self.c[i]
+
+        addtl_alloc = (r-offset)/(k-1)
+
+        return self.sig_funcs[0].sigmoid_derivative(self.c[0]+addtl_alloc)
 
     def minimum_search(self,curr_r,k,r_max_prev):
         #print('FIND MINIMUM')
+        highest_r_evaluated = self.c[k-1] + r_max_prev
         curr_lam = -np.Inf
         prev_lam = np.Inf
         prev_r = -np.Inf
@@ -135,6 +144,7 @@ class bilevel_problem:
         self.inner_calls += 1
         self.sigopt_problem.solve()
         x_alloc = self.sigopt_problem.sol.x_opt_approx
+
         grad_l = self.sigopt_problem.sol.dual_r
         l_value = self.sigopt_problem.sol.lb
 
@@ -142,8 +152,15 @@ class bilevel_problem:
             self.eps *= .01
             self.nu *= 2
 
-        while (np.abs(curr_lam-prev_lam) > self.eps) and ((curr_r > prev_r and curr_r > prev_r_2) or (curr_r < prev_r and curr_r < prev_r_2)) and (time.time() - self.time_start < self.time_lim):
-
+        while True:
+            # print(f'fog: {highest_r_evaluated}')
+            # print(f'curr_r: {curr_r}')
+            if np.abs(curr_lam-prev_lam) < self.eps:
+                # print('shit')
+                if True:#not ((curr_r > prev_r and curr_r > prev_r_2) or (curr_r < prev_r and curr_r < prev_r_2)):
+                    break
+            if time.time() - self.time_start > self.time_lim:
+                break
             # #print(np.abs(curr_lam-prev_lam) > self.eps)
             prev_r_2 = prev_r
             prev_r = curr_r
@@ -154,10 +171,11 @@ class bilevel_problem:
 
             self.all_sols.append(self.sigopt_problem.sol.lb)
 
-            if k > self.n or curr_r - r_max_prev < self.c[k-1]:
+            if k > self.n or curr_r < highest_r_evaluated:
                 x_alloc_prev = x_alloc
+                # print('SKIP')
                 grad_l, x_alloc, l_value = self.propogate_sol(k,x_alloc,curr_r,prev_r)
-                # #print(grad_l)
+                # print(grad_l)
 
             else:
                 self.sigopt_problem.r = curr_r
@@ -168,10 +186,20 @@ class bilevel_problem:
                 self.sigopt_problem.clear()
                 self.inner_calls += 1
                 self.sigopt_problem.solve()
-                grad_l = self.sigopt_problem.sol.dual_r
-                x_alloc = self.sigopt_problem.sol.x_opt_approx
-                l_value = self.sigopt_problem.sol.lb
 
+                #grad_l = self.sigopt_problem.sol.dual_r
+                x_alloc = self.sigopt_problem.sol.x_opt_approx
+                if curr_r > highest_r_evaluated:
+                    # print('SWITCH')
+                    highest_r_evaluated = curr_r
+
+
+                grad_l = self.get_dual_manually(k,curr_r)
+                # print(grad_l)
+                # print(x_alloc)
+                l_value = self.sigopt_problem.sol.lb
+            # print(self.sig_funcs[0].sigmoid_derivative(x_alloc[0]))
+            # print(self.sig_funcs[1].sigmoid_derivative(x_alloc[1]))
             # except:
             #     #print('try')
             #     curr_r = curr_r + 0.1
@@ -187,7 +215,8 @@ class bilevel_problem:
             # #print(f'\n')
             # #print(curr_lam-prev_lam)
         print(f'min found: {curr_r}')
-        #print(f'min found: {curr_lam}')
+        # print(f'min found: {grad_l}')
+
         if time.time() - self.time_start > self.time_lim:
 
             return None,None,None
@@ -235,7 +264,7 @@ class bilevel_problem:
                 x_i += (curr_r-prev_r)/(k-1)
             x_approx_new.append(x_i)
 
-        grad_l = self.sig_funcs[0].sigmoid_derivative(x_approx_new[0])
+        grad_l = self.get_dual_manually(k,curr_r)
         # #print(x_approx_new)
         # #print(grad_l)
         return grad_l,x_approx_new,l_value
@@ -488,7 +517,7 @@ import time
 
 # pr = so.problem(sig_funcs,[],[0]*10,upper_lims,0.1,1,d_vec=[1,1,1,1,1,1,1,1,1,1])
 t = time.time()
-blvl = bilevel_problem(a,c,4,0.00002,.22,1,.001,.01,False,1)
+blvl = bilevel_problem(a,c,4,0.00001,.22,1,.0001,.01,False,1)
 
 opt_x_alloc, opt_r, opt_lam,minima,minima_r,maxima,maxima_r,inner_calls,time_elapsed = blvl.solve()
 print(time.time()-t)
